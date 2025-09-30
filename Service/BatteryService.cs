@@ -8,6 +8,7 @@ using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
 using System.Xml.Linq;
+using System.Configuration;
 
 namespace Service
 {
@@ -15,9 +16,13 @@ namespace Service
     public class BatteryService : IBatteryService
     {
         private static readonly string BaseDataPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
+        private static readonly ConcurrentDictionary<string, BatterySession> _sessions = new ConcurrentDictionary<string, BatterySession>();
 
-        // Track active sessions
-        private static readonly ConcurrentDictionary<string, SessionContext> _sessions = new ConcurrentDictionary<string, SessionContext>();
+        private readonly double T_threshold = double.Parse(ConfigurationManager.AppSettings["T_threshold"]);
+        private readonly double R_min = double.Parse(ConfigurationManager.AppSettings["R_min"]);
+        private readonly double R_max = double.Parse(ConfigurationManager.AppSettings["R_max"]);
+        private readonly double Range_min = double.Parse(ConfigurationManager.AppSettings["Range_min"]);
+        private readonly double Range_max = double.Parse(ConfigurationManager.AppSettings["Range_max"]);
 
         public void StartSession(EisMeta meta)
         {
@@ -27,29 +32,31 @@ namespace Service
             string sessionFolder = Path.Combine(BaseDataPath, meta.BatteryId, meta.TestId, $"{meta.SoC}%");
             Directory.CreateDirectory(sessionFolder);
 
-            string sessionFile = Path.Combine(sessionFolder, "session.csv");
-            string rejectsFile = Path.Combine(sessionFolder, "rejects.csv");
+            var sessionFile = Path.Combine(sessionFolder, "session.csv");
+            var rejectsFile = Path.Combine(sessionFolder, "rejects.csv");
 
-            // Create files with headers if not exist
-            if (!File.Exists(sessionFile))
-                File.WriteAllText(sessionFile, "RowIndex,FrequencyHz,R_ohm,X_ohm,T_degC,Range_ohm,Timestamp\n");
-
-            if (!File.Exists(rejectsFile))
-                File.WriteAllText(rejectsFile, "RowIndex,Reason,Timestamp\n");
-
-            var context = new SessionContext
+            var session = new BatterySession
             {
-                SessionFolder = sessionFolder,
-                SessionFileWriter = new StreamWriter(sessionFile, true) { AutoFlush = true },
-                RejectsWriter = new StreamWriter(rejectsFile, true) { AutoFlush = true }
+                SessionFileWriter = new StreamWriter(sessionFile, append: false),
+                RejectsWriter = new StreamWriter(rejectsFile, append: false),
+                BatteryId = meta.BatteryId,
+                SoC = meta.SoC
             };
+            session.LastT = double.NaN;
 
-            _sessions[meta.SessionId] = context;
+            if (new FileInfo(sessionFile).Length == 0)
+                session.SessionFileWriter.WriteLine("RowIndex,FrequencyHz,R_ohm,X_ohm,T_degC,Range_ohm,Timestamp");
+            if (new FileInfo(rejectsFile).Length == 0)
+                session.RejectsWriter.WriteLine("RowIndex,Reason,Timestamp");
 
+            session.SessionFileWriter.Flush();
+            session.RejectsWriter.Flush();
+
+            _sessions[meta.SessionId] = session;
             Console.WriteLine($"Started session {meta.SessionId} for {meta.BatteryId}_{meta.TestId}_SoC{meta.SoC}");
         }
 
-        public void PushSample(EisSample sample)
+        public AckNackResponse PushSample(EisSample sample)
         {
             if (sample == null || string.IsNullOrEmpty(sample.SessionId))
                 throw new FaultException<DataFormatFault>(new DataFormatFault { Message = "Sample or SessionId is null" });
@@ -59,21 +66,79 @@ namespace Service
 
             try
             {
+                if (sample.RowIndex <= session.LastRowIndex)
+                    throw new FaultException<ValidationFault>(new ValidationFault { Message = "RowIndex not increasing" });
                 if (sample.FrequencyHz <= 0)
+                    throw new FaultException<ValidationFault>(new ValidationFault { Message = "Frequency must be > 0" });
+
+                var response = new AckNackResponse
                 {
-                    session.RejectsWriter.WriteLine($"{sample.RowIndex},Frequency must be > 0,{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                    return;
+                    Status = "ACK",
+                    SessionStatus = "IN_PROGRESS"
+                };
+
+                // --- Resistance check
+                if (sample.R_ohm < R_min || sample.R_ohm > R_max)
+                {
+                    string reason = $"Row {sample.RowIndex}, SoC={session.SoC}, Battery={session.BatteryId}, Expected R_ohm [{R_min}-{R_max}], Actual R_ohm={sample.R_ohm}";
+                    session.RejectsWriter.WriteLine($"{sample.RowIndex},{reason},{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    session.RejectsWriter.Flush();
+                    response.Status = "NACK";
+                    response.WarningMessage = reason;
+                    return response;
                 }
 
-                string line = $"{sample.RowIndex},{sample.FrequencyHz},{sample.R_ohm},{sample.X_ohm},{sample.T_degC},{sample.Range_ohm},{sample.TimestampLocal:yyyy-MM-dd HH:mm:ss}";
-                session.SessionFileWriter.WriteLine(line);
+                // --- Range check
+                if (sample.Range_ohm < Range_min || sample.Range_ohm > Range_max)
+                {
+                    string reason = $"Row {sample.RowIndex}, SoC={session.SoC}, Battery={session.BatteryId}, Expected Range_ohm [{Range_min}-{Range_max}], Actual Range_ohm={sample.Range_ohm}";
+                    session.RejectsWriter.WriteLine($"{sample.RowIndex},{reason},{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+                    session.RejectsWriter.Flush();
+                    response.Status = "NACK";
+                    response.WarningMessage = reason;
+                    return response;
+                }
 
-                Console.WriteLine($"Saved sample row {sample.RowIndex} for session {sample.SessionId}");
+                // --- Temperature spike detection (kept unchanged)
+                if (!double.IsNaN(session.LastT))
+                {
+                    double deltaT = sample.T_degC - session.LastT;
+                    if (Math.Abs(deltaT) > T_threshold)
+                    {
+                        response.TemperatureSpike = true;
+                        response.DeltaT = deltaT;
+                        response.SpikeDirection = deltaT > 0 ? "rise" : "fall";
+
+                        // Add the requested fields
+                        response.CurrentT = sample.T_degC;
+                        response.FrequencyHz = sample.FrequencyHz;
+                        response.SoC = session.SoC;
+
+                        response.WarningMessage =
+                            $"Temperature spike {response.SpikeDirection}: ΔT={deltaT}, " +
+                            $"T={sample.T_degC}, Freq={sample.FrequencyHz}Hz, SoC={session.SoC}";
+                    }
+                }
+                session.LastT = sample.T_degC;
+
+                // Write sample to session file
+                session.SessionFileWriter.WriteLine(
+                    $"{sample.RowIndex},{sample.FrequencyHz},{sample.R_ohm},{sample.X_ohm},{sample.T_degC},{sample.Range_ohm},{sample.TimestampLocal:yyyy-MM-dd HH:mm:ss}");
+                session.SessionFileWriter.Flush();
+                session.LastRowIndex = sample.RowIndex;
+
+                return response;
             }
             catch (Exception ex)
             {
                 session.RejectsWriter.WriteLine($"{sample.RowIndex},{ex.Message},{DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-                Console.WriteLine($"Failed to write sample {sample.RowIndex}: {ex.Message}");
+                session.RejectsWriter.Flush();
+                return new AckNackResponse
+                {
+                    Status = "NACK",
+                    SessionStatus = "IN_PROGRESS",
+                    WarningMessage = ex.Message
+                };
             }
         }
 
@@ -84,27 +149,13 @@ namespace Service
 
             if (_sessions.TryRemove(meta.SessionId, out var session))
             {
-                session.SessionFileWriter?.Dispose();
-                session.RejectsWriter?.Dispose();
+                session.Dispose();
                 Console.WriteLine($"Ended session {meta.SessionId} for {meta.BatteryId}_{meta.TestId}_SoC{meta.SoC}");
             }
-        }
-
-        public void Dispose()
-        {
-            foreach (var kv in _sessions)
+            else
             {
-                kv.Value.SessionFileWriter?.Dispose();
-                kv.Value.RejectsWriter?.Dispose();
+                throw new FaultException<DataFormatFault>(new DataFormatFault { Message = "Session not found" });
             }
-            _sessions.Clear();
-        }
-
-        private class SessionContext
-        {
-            public string SessionFolder { get; set; }
-            public StreamWriter SessionFileWriter { get; set; }
-            public StreamWriter RejectsWriter { get; set; }
         }
     }
-}
+    }

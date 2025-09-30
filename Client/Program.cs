@@ -15,6 +15,7 @@ namespace Client
     {
         static void Main(string[] args)
         {
+            // Regular ChannelFactory for non-duplex service
             var factory = new ChannelFactory<IBatteryService>("BatteryServiceEndpoint");
             IBatteryService client = factory.CreateChannel();
 
@@ -27,10 +28,9 @@ namespace Client
                 string fileName = Path.GetFileNameWithoutExtension(filePath);
                 var parts = fileName.Split('_');
 
-                // Extract metadata from filename
-                string batteryId = parts[1];                     // e.g., IFR14500
-                string testId = parts[2] + "_" + parts[3];       // e.g., SoC_30
-                int soc = int.Parse(parts[3]);                   // e.g., 30
+                string batteryId = parts[1];
+                string testId = parts[2] + "_" + parts[3];
+                int soc = int.Parse(parts[3]);
 
                 var meta = new EisMeta
                 {
@@ -47,10 +47,10 @@ namespace Client
 
                     using (var reader = new CsvReaderWrapper(filePath))
                     {
-                        reader.ReadLine(); // Skip header
+                        reader.ReadLine(); // skip header
                         int rowIndex = 0;
-
                         string line;
+
                         while ((line = reader.ReadLine()) != null)
                         {
                             try
@@ -66,10 +66,21 @@ namespace Client
                                     X_ohm = double.Parse(values[2], CultureInfo.InvariantCulture),
                                     T_degC = double.Parse(values[4], CultureInfo.InvariantCulture),
                                     Range_ohm = double.Parse(values[5], CultureInfo.InvariantCulture),
-                                    TimestampLocal = DateTime.Now
+                                    TimestampLocal = DateTime.Now,
+                                    SoC = meta.SoC
                                 };
 
-                                client.PushSample(sample);
+                                var response = client.PushSample(sample);
+
+                                // Log ACK/NACK
+                                Console.WriteLine($"PushSample Row {sample.RowIndex}: {response.Status}");
+
+                                // Log any warnings or spikes
+                                if (!string.IsNullOrEmpty(response.WarningMessage))
+                                    Console.WriteLine($"Warning: {response.WarningMessage}");
+
+                                if (response.TemperatureSpike)
+                                    Console.WriteLine($"Temperature spike detected: ΔT={response.DeltaT}, Direction={response.SpikeDirection}");
                             }
                             catch (FaultException<DataFormatFault> ex)
                             {
@@ -92,12 +103,12 @@ namespace Client
                 catch (FaultException<DataFormatFault> ex)
                 {
                     Console.WriteLine($"Data format error starting session: {ex.Detail.Message}");
-                    continue; // skip this file
+                    continue;
                 }
                 catch (FaultException<ValidationFault> ex)
                 {
                     Console.WriteLine($"Validation error starting session: {ex.Detail.Message}");
-                    continue; // skip this file
+                    continue;
                 }
                 catch (Exception ex)
                 {
@@ -106,7 +117,6 @@ namespace Client
                 }
             }
 
-            // Close the WCF channel safely
             if (client is ICommunicationObject comm)
             {
                 try { comm.Close(); }

@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 
 namespace Common
 {
+
     [ServiceContract]
     public interface IBatteryService
     {
@@ -18,7 +19,7 @@ namespace Common
         [OperationContract]
         [FaultContract(typeof(DataFormatFault))]
         [FaultContract(typeof(ValidationFault))]
-        void PushSample(EisSample sample);
+        AckNackResponse PushSample(EisSample sample);
 
         [OperationContract]
         [FaultContract(typeof(DataFormatFault))]
@@ -28,45 +29,24 @@ namespace Common
     [DataContract]
     public class EisMeta
     {
-        [DataMember]
-        public string SessionId { get; set; }
-
-        [DataMember]
-        public string BatteryId { get; set; }
-
-        [DataMember]
-        public string TestId { get; set; }
-
-        [DataMember]
-        public int SoC { get; set; }
+        [DataMember] public string SessionId { get; set; }
+        [DataMember] public string BatteryId { get; set; }
+        [DataMember] public string TestId { get; set; }
+        [DataMember] public int SoC { get; set; }
     }
 
     [DataContract]
     public class EisSample
     {
-        [DataMember]
-        public string SessionId { get; set; } 
-
-        [DataMember]
-        public int RowIndex { get; set; }
-
-        [DataMember]
-        public double FrequencyHz { get; set; }
-
-        [DataMember]
-        public double R_ohm { get; set; }
-
-        [DataMember]
-        public double X_ohm { get; set; }
-
-        [DataMember]
-        public double T_degC { get; set; }
-
-        [DataMember]
-        public double Range_ohm { get; set; }
-
-        [DataMember]
-        public DateTime TimestampLocal { get; set; }
+        [DataMember] public string SessionId { get; set; }
+        [DataMember] public int RowIndex { get; set; }
+        [DataMember] public double FrequencyHz { get; set; }
+        [DataMember] public double R_ohm { get; set; }
+        [DataMember] public double X_ohm { get; set; }
+        [DataMember] public double T_degC { get; set; }
+        [DataMember] public double Range_ohm { get; set; }
+        [DataMember] public DateTime TimestampLocal { get; set; }
+        [DataMember] public int SoC { get; set; }
     }
 
     [DataContract]
@@ -80,4 +60,23 @@ namespace Common
     {
         [DataMember] public string Message { get; set; }
     }
+
+    [DataContract]
+    public class AckNackResponse
+    {
+        [DataMember] public string Status { get; set; }
+        [DataMember] public string SessionStatus { get; set; }
+
+        // Warning poruke
+        [DataMember] public string WarningMessage { get; set; }
+        [DataMember] public bool TemperatureSpike { get; set; }
+        [DataMember] public double DeltaT { get; set; }
+        [DataMember] public string SpikeDirection { get; set; }
+
+        // Temperature spike message
+        [DataMember] public double CurrentT { get; set; }
+        [DataMember] public double FrequencyHz { get; set; }
+        [DataMember] public int SoC { get; set; }
+    }
+
 }
