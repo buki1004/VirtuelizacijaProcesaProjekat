@@ -77,7 +77,7 @@ namespace Service
                     SessionStatus = "IN_PROGRESS"
                 };
 
-                // --- Resistance check
+                // --- Resistance provera
                 if (sample.R_ohm < R_min || sample.R_ohm > R_max)
                 {
                     string reason = $"Row {sample.RowIndex}, SoC={session.SoC}, Battery={session.BatteryId}, Expected R_ohm [{R_min}-{R_max}], Actual R_ohm={sample.R_ohm}";
@@ -88,7 +88,7 @@ namespace Service
                     return response;
                 }
 
-                // --- Range check
+                // --- Range provera
                 if (sample.Range_ohm < Range_min || sample.Range_ohm > Range_max)
                 {
                     string reason = $"Row {sample.RowIndex}, SoC={session.SoC}, Battery={session.BatteryId}, Expected Range_ohm [{Range_min}-{Range_max}], Actual Range_ohm={sample.Range_ohm}";
@@ -99,7 +99,7 @@ namespace Service
                     return response;
                 }
 
-                // --- Temperature spike detection (kept unchanged)
+                // --- Skok temperature 
                 if (!double.IsNaN(session.LastT))
                 {
                     double deltaT = sample.T_degC - session.LastT;
@@ -109,7 +109,6 @@ namespace Service
                         response.DeltaT = deltaT;
                         response.SpikeDirection = deltaT > 0 ? "rise" : "fall";
 
-                        // Add the requested fields
                         response.CurrentT = sample.T_degC;
                         response.FrequencyHz = sample.FrequencyHz;
                         response.SoC = session.SoC;
@@ -121,7 +120,6 @@ namespace Service
                 }
                 session.LastT = sample.T_degC;
 
-                // Write sample to session file
                 session.SessionFileWriter.WriteLine(
                     $"{sample.RowIndex},{sample.FrequencyHz},{sample.R_ohm},{sample.X_ohm},{sample.T_degC},{sample.Range_ohm},{sample.TimestampLocal:yyyy-MM-dd HH:mm:ss}");
                 session.SessionFileWriter.Flush();

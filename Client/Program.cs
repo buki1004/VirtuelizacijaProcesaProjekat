@@ -15,7 +15,6 @@ namespace Client
     {
         static void Main(string[] args)
         {
-            // Regular ChannelFactory for non-duplex service
             var factory = new ChannelFactory<IBatteryService>("BatteryServiceEndpoint");
             IBatteryService client = factory.CreateChannel();
 
@@ -47,7 +46,7 @@ namespace Client
 
                     using (var reader = new CsvReaderWrapper(filePath))
                     {
-                        reader.ReadLine(); // skip header
+                        reader.ReadLine();
                         int rowIndex = 0;
                         string line;
 
@@ -72,10 +71,8 @@ namespace Client
 
                                 var response = client.PushSample(sample);
 
-                                // Log ACK/NACK
                                 Console.WriteLine($"PushSample Row {sample.RowIndex}: {response.Status}");
 
-                                // Log any warnings or spikes
                                 if (!string.IsNullOrEmpty(response.WarningMessage))
                                     Console.WriteLine($"Warning: {response.WarningMessage}");
 

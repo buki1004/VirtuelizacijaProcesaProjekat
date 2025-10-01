@@ -73,7 +73,7 @@ namespace Common
         [DataMember] public double DeltaT { get; set; }
         [DataMember] public string SpikeDirection { get; set; }
 
-        // Temperature spike message
+        // Skok temperature message
         [DataMember] public double CurrentT { get; set; }
         [DataMember] public double FrequencyHz { get; set; }
         [DataMember] public int SoC { get; set; }
